@@ -1,0 +1,13 @@
+# ambiente Python
+.conda/
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+# dados baixados (grandes demais; o script baixa de novo)
+data/
+
+# firmware ESP-IDF (gerados na compilação)
+build/
+managed_components/
+sdkconfig.old
