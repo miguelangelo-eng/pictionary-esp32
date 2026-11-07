@@ -134,7 +134,16 @@ static void imprimir_tabela()
            (float)f.tamanho / q.tamanho,
            (float)f.interpretador->arena_used_bytes() / q.interpretador->arena_used_bytes(),
            (float)f.media_us / q.media_us);
-    printf("  CPU a %d MHz\n\n", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    #if defined(CONFIG_COMPILER_OPTIMIZATION_PERF)
+    const char* otimizacao = "-O2 (performance)";
+    #elif defined(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+        const char* otimizacao = "-Os (tamanho)";
+    #elif defined(CONFIG_COMPILER_OPTIMIZATION_NONE)
+        const char* otimizacao = "-O0 (nenhuma)";
+    #else
+        const char* otimizacao = "-Og (debug)";
+    #endif
+        printf("  CPU a %d MHz | compilado com %s\n\n", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, otimizacao);
 }
 
 // ---------------------------------------------------------------- main
