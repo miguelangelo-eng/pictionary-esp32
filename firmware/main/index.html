@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pictionary ESP32</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee;
+         margin: 0; padding: 16px; display: flex; flex-direction: column; align-items: center; }
+  h1 { margin: 4px 0 4px; font-size: 1.4rem; }
+  .sub { color: #999; font-size: .9rem; margin: 0 0 12px; text-align: center; }
+  .largura { width: min(92vw, 420px); }
+  #quadro { aspect-ratio: 1; background: #fff; border-radius: 12px; touch-action: none; cursor: crosshair; }
+  .botoes { display: flex; gap: 8px; margin: 12px 0; }
+  button { flex: 1; padding: 12px; font-size: 1rem; border: 0; border-radius: 8px; cursor: pointer; }
+  #limpar { background: #333; color: #eee; }
+  #adivinhar { background: #4cc38a; color: #062; font-weight: bold; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .cartoes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cartao { background: #1d1f24; border-radius: 10px; padding: 10px; }
+  .cartao h2 { margin: 0 0 4px; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: #999; }
+  .palpite { font-size: 1.3rem; font-weight: bold; min-height: 1.6em; }
+  .tempo { color: #999; font-size: .85rem; margin-bottom: 6px; }
+  .barra { display: flex; align-items: center; gap: 6px; font-size: .8rem; margin: 3px 0; }
+  .barra span { width: 90px; color: #bbb; }
+  .barra i { display: block; height: 8px; border-radius: 4px; background: #4cc38a; }
+  .int8 .barra i { background: #f5a524; }
+  .rodape { display: flex; align-items: center; gap: 12px; margin-top: 12px; color: #999; font-size: .85rem; }
+  #previa { width: 56px; height: 56px; image-rendering: pixelated; border: 1px solid #444; }
+</style>
+</head>
+<body>
+  <h1>🎨 Pictionary ESP32</h1>
+  <p class="sub">Desenhe algo. A rede neural roda <b>dentro da ESP32</b>.</p>
+
+  <canvas id="quadro" class="largura" width="420" height="420"></canvas>
+  <div class="botoes largura">
+    <button id="limpar">Limpar</button>
+    <button id="adivinhar">Adivinhar</button>
+  </div>
+
+  <div class="cartoes largura">
+    <div class="cartao float32"><h2>float32</h2><div class="palpite" id="palpite-float32">—</div>
+      <div class="tempo" id="tempo-float32"></div><div id="barras-float32"></div></div>
+    <div class="cartao int8"><h2>int8</h2><div class="palpite" id="palpite-int8">—</div>
+      <div class="tempo" id="tempo-int8"></div><div id="barras-int8"></div></div>
+  </div>
+
+  <div class="rodape largura">
+    <canvas id="previa" width="28" height="28"></canvas>
+    <span>O que o modelo vê (28×28)</span>
+  </div>
+
+<script>
+// nomes em português para mostrar na tela (o modelo usa os nomes em inglês)
+const PT = { "apple": "maçã", "bicycle": "bicicleta", "car": "carro", "cat": "gato",
+  "clock": "relógio", "eye": "olho", "fish": "peixe", "house": "casa", "key": "chave",
+  "light bulb": "lâmpada", "rainbow": "arco-íris", "star": "estrela", "sun": "sol",
+  "tree": "árvore", "umbrella": "guarda-chuva" };
+const traduzir = (nome) => PT[nome] || nome;
+
+// ------------------------------------------------------------------ desenho
+const quadro = document.getElementById("quadro");
+const ctx = quadro.getContext("2d");
+let tracos = [];
+let tracoAtual = null;
+
+function limpar() {
+  tracos = [];
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, quadro.width, quadro.height);
+  desenharPrevia(new Uint8Array(784));
+  for (const m of ["float32", "int8"]) {
+    document.getElementById("palpite-" + m).textContent = "—";
+    document.getElementById("tempo-" + m).textContent = "";
+    document.getElementById("barras-" + m).innerHTML = "";
+  }
+}
+
+function posicao(evento) {
+  const r = quadro.getBoundingClientRect();
+  return [(evento.clientX - r.left) * quadro.width / r.width,
+          (evento.clientY - r.top) * quadro.height / r.height];
+}
+
+quadro.addEventListener("pointerdown", (e) => {
+  quadro.setPointerCapture(e.pointerId);
+  tracoAtual = [posicao(e)];
+  tracos.push(tracoAtual);
+});
+quadro.addEventListener("pointermove", (e) => {
+  if (!tracoAtual) return;
+  const novo = posicao(e);
+  const anterior = tracoAtual[tracoAtual.length - 1];
+  tracoAtual.push(novo);
+  ctx.strokeStyle = "#111"; ctx.lineWidth = 10; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(anterior[0], anterior[1]); ctx.lineTo(novo[0], novo[1]); ctx.stroke();
+});
+quadro.addEventListener("pointerup", () => {
+  tracoAtual = null;
+});
+
+// ------------------------------------------------------------------ pré-processamento
+function preprocessar(tracos) {
+  const TAM = 256, MARGEM = 10, ESPESSURA = 16;
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const traco of tracos) for (const [x, y] of traco) {
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+  const largura = Math.max(x1 - x0, 1), altura = Math.max(y1 - y0, 1);
+  const escala = (TAM - 2 * MARGEM) / Math.max(largura, altura);
+  const dx = (TAM - largura * escala) / 2 - x0 * escala;
+  const dy = (TAM - altura * escala) / 2 - y0 * escala;
+
+  const grande = document.createElement("canvas");
+  grande.width = grande.height = TAM;
+  const g = grande.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, TAM, TAM);
+  g.strokeStyle = "#fff"; g.lineWidth = ESPESSURA; g.lineCap = "round"; g.lineJoin = "round";
+  for (const traco of tracos) {
+    g.beginPath();
+    g.moveTo(traco[0][0] * escala + dx, traco[0][1] * escala + dy);
+    for (const [x, y] of traco.slice(1)) g.lineTo(x * escala + dx, y * escala + dy);
+    if (traco.length === 1) g.lineTo(traco[0][0] * escala + dx + 0.1, traco[0][1] * escala + dy);
+    g.stroke();
+  }
+
+  let origem = grande;
+  for (const tamanho of [128, 56, 28]) {
+    const c = document.createElement("canvas");
+    c.width = c.height = tamanho;
+    const cc = c.getContext("2d");
+    cc.imageSmoothingEnabled = true;
+    cc.imageSmoothingQuality = "high";
+    cc.drawImage(origem, 0, 0, tamanho, tamanho);
+    origem = c;
+  }
+
+  const rgba = origem.getContext("2d").getImageData(0, 0, 28, 28).data;
+  const pixels = new Uint8Array(784);
+  for (let i = 0; i < 784; i++) pixels[i] = rgba[i * 4];
+  return pixels;
+}
+
+function desenharPrevia(pixels) {
+  const p = document.getElementById("previa").getContext("2d");
+  const img = p.createImageData(28, 28);
+  for (let i = 0; i < 784; i++) {
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = pixels[i];
+    img.data[i * 4 + 3] = 255;
+  }
+  p.putImageData(img, 0, 0);
+}
+
+// ------------------------------------------------------------------ comunicação com a ESP32
+function mostrarResultado(nomeModelo, resultado, categorias) {
+  // ordena as categorias da mais provável para a menos provável
+  const ordem = resultado.probs
+    .map((p, i) => [p, i])
+    .sort((a, b) => b[0] - a[0]);
+  const [pMelhor, iMelhor] = ordem[0];
+
+  document.getElementById("palpite-" + nomeModelo).textContent =
+    `${traduzir(categorias[iMelhor])} ${(pMelhor * 100).toFixed(0)}%`;
+  document.getElementById("tempo-" + nomeModelo).textContent = `${resultado.ms.toFixed(1)} ms`;
+  document.getElementById("barras-" + nomeModelo).innerHTML = ordem.slice(0, 3).map(([p, i]) =>
+    `<div class="barra"><span>${traduzir(categorias[i])}</span>` +
+    `<i style="width:${Math.max(2, p * 100)}%"></i></div>`).join("");
+}
+
+async function adivinhar() {
+  if (tracos.length === 0) return;
+  const pixels = preprocessar(tracos);
+  desenharPrevia(pixels);
+
+  const botao = document.getElementById("adivinhar");
+  botao.disabled = true;
+  botao.textContent = "Pensando...";
+  try {
+    const resposta = await fetch("/prever", {
+      method: "POST",
+      body: pixels,                                         // os 784 bytes, sem conversão
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+    const dados = await resposta.json();
+    mostrarResultado("float32", dados.float32, dados.categorias);
+    mostrarResultado("int8", dados.int8, dados.categorias);
+  } catch (erro) {
+    document.getElementById("palpite-int8").textContent = "erro";
+    console.error(erro);
+  } finally {
+    botao.disabled = false;
+    botao.textContent = "Adivinhar";
+  }
+}
+
+document.getElementById("limpar").onclick = limpar;
+document.getElementById("adivinhar").onclick = adivinhar;
+limpar();
+</script>
+</body>
+</html>

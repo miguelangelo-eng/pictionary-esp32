@@ -91,6 +91,41 @@ static int classe_prevista(const TfLiteTensor* t)
     return melhor;
 }
 
+// o ESP-IDF embute o index.html no firmware e cria estes dois símbolos
+extern const char index_html_inicio[] asm("_binary_index_html_start");
+extern const char index_html_fim[]    asm("_binary_index_html_end");
+
+// probabilidade da categoria k, nas duas versões (no int8, converte de volta para 0..1)
+static float probabilidade(const TfLiteTensor* t, int k)
+{
+    if (t->type == kTfLiteFloat32) return t->data.f[k];
+    return (t->data.int8[k] - t->params.zero_point) * t->params.scale;
+}
+
+// roda um modelo num desenho e escreve o resultado em JSON dentro de 'buf'
+static int prever_json(Modelo& m, const uint8_t* pixels, char* buf, size_t tamanho)
+{
+    TfLiteTensor* entrada = m.interpretador->input(0);
+    const TfLiteTensor* saida = m.interpretador->output(0);
+
+    preencher_entrada(entrada, pixels);
+    int64_t t0 = esp_timer_get_time();
+    m.interpretador->Invoke();
+    float ms = (esp_timer_get_time() - t0) / 1000.0f;
+
+    int classe = classe_prevista(saida);
+    printf("  [%-7s] %-11s %5.1f%%  %6.1f ms\n",
+           m.nome, kCategorias[classe], probabilidade(saida, classe) * 100, ms);
+
+    int n = snprintf(buf, tamanho, "\"%s\":{\"classe\":%d,\"ms\":%.1f,\"probs\":[",
+                     m.nome, classe, ms);
+    for (int k = 0; k < NUM_CLASSES; k++) {
+        n += snprintf(buf + n, tamanho - n, "%s%.4f", k ? "," : "", probabilidade(saida, k));
+    }
+    n += snprintf(buf + n, tamanho - n, "]}");
+    return n;
+}
+
 #if RODAR_BENCHMARK
 // ---------------------------------------------------------------- benchmark
 static void benchmark(Modelo& m)
@@ -205,16 +240,45 @@ static void iniciar_wifi_casa()
 // ---------------------------------------------------------------- servidor web
 static esp_err_t pagina_inicial(httpd_req_t* req)
 {
-    const char* html =
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        "<title>Pictionary ESP32</title></head>"
-        "<body style='font-family:sans-serif;padding:16px'>"
-        "<h1>Pictionary ESP32</h1>"
-        "<p>A placa esta funcionando!</p>"
-        "</body></html>";
     httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+    // o EMBED_TXTFILES adiciona um '\0' no fim do arquivo; não enviamos esse byte
+    size_t tamanho = index_html_fim - index_html_inicio - 1;
+    return httpd_resp_send(req, index_html_inicio, tamanho);
+}
+
+// POST /prever: recebe 784 bytes (o desenho 28x28) e responde com as previsões em JSON
+static esp_err_t rota_prever(httpd_req_t* req)
+{
+    static uint8_t pixels[IMG_PIXELS];
+
+    if (req->content_len != IMG_PIXELS) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "esperado 784 bytes (28x28)");
+        return ESP_FAIL;
+    }
+
+    // os dados podem chegar em pedaços: lê até completar os 784 bytes
+    size_t recebido = 0;
+    while (recebido < IMG_PIXELS) {
+        int r = httpd_req_recv(req, (char*)pixels + recebido, IMG_PIXELS - recebido);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;   // demorou: tenta de novo
+        if (r <= 0) return ESP_FAIL;                 // conexão caiu
+        recebido += r;
+    }
+
+    printf("desenho recebido:\n");
+    static char json[1024];
+    int n = snprintf(json, sizeof(json), "{\"categorias\":[");
+    for (int k = 0; k < NUM_CLASSES; k++) {
+        n += snprintf(json + n, sizeof(json) - n, "%s\"%s\"", k ? "," : "", kCategorias[k]);
+    }
+    n += snprintf(json + n, sizeof(json) - n, "],");
+    n += prever_json(g_float32, pixels, json + n, sizeof(json) - n);
+    n += snprintf(json + n, sizeof(json) - n, ",");
+    n += prever_json(g_int8, pixels, json + n, sizeof(json) - n);
+    n += snprintf(json + n, sizeof(json) - n, "}");
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json, n);
 }
 
 static void iniciar_servidor()
@@ -230,6 +294,12 @@ static void iniciar_servidor()
     rota_inicial.method = HTTP_GET;
     rota_inicial.handler = pagina_inicial;
     httpd_register_uri_handler(servidor, &rota_inicial);
+
+    httpd_uri_t rota_previsao = {};
+    rota_previsao.uri = "/prever";
+    rota_previsao.method = HTTP_POST;
+    rota_previsao.handler = rota_prever;
+    httpd_register_uri_handler(servidor, &rota_previsao);
 
     printf("Servidor web iniciado\n");
 }
