@@ -19,3 +19,14 @@ Avaliação com 300 desenhos de teste.
 | RAM (tensor arena)     | 63.7 KB   | 18.9 KB   | 3.4x menos RAM   |
 | Tempo médio            | 690.75 ms | 125.51 ms | 5.5x mais rápido |
 | Acurácia               | 96.0 %    | 96.0 %    | igual            |
+
+# Configuração padrão (240 MHz, -O2, 80 MHz (flash), QIO)
+
+Avaliação com 300 desenhos de teste.
+
+| Métrica                | float32   | int8      | Ganho do int8    |
+|------------------------|----------:|----------:|------------------|
+| Tamanho do modelo      | 391.2 KB  | 108.2 KB  | 3.6x menor       |
+| RAM (tensor arena)     | 63.7 KB   | 18.9 KB   | 3.4x menos RAM   |
+| Tempo médio            | 401.19 ms | 115.59 ms | 3.5x mais rápido |
+| Acurácia               | 96.0 %    | 96.0 %    | igual            |
