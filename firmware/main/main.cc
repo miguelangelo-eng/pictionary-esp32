@@ -7,6 +7,8 @@
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/schema/schema_generated.h"
+#include "modelo_int8.h"
+#include "modelo_float32.h"
 
 extern "C" void app_main(void)
 {
@@ -26,6 +28,9 @@ extern "C" void app_main(void)
 
     // RAM livre (onde o modelo e a tensor arena vao ter que caber)
     printf("RAM livre: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+
+    printf("Modelo int8:    %u bytes\n", modelo_int8_len);
+    printf("Modelo float32: %u bytes\n", modelo_float32_len);
 
     // pisca uma mensagem a cada segundo, para mostrar que a placa esta viva
     int contador = 0;
