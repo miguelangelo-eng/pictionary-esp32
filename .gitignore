@@ -11,3 +11,6 @@ data/
 build/
 managed_components/
 sdkconfig.old
+
+# senha do Wi-Fi (nunca vai para o GitHub)
+firmware/main/wifi_credenciais.h

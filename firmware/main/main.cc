@@ -2,6 +2,14 @@
 #include <math.h>
 #include <limits.h>
 
+#include <string.h>
+#include "esp_event.h"
+#include "esp_http_server.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "wifi_credenciais.h"
+
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -15,6 +23,10 @@
 #include "amostras.h"
 #include "modelo_float32.h"
 #include "modelo_int8.h"
+
+#define WIFI_SSID  "Pictionary-IA"
+#define WIFI_SENHA "tinyml123"      // mínimo de 8 caracteres
+#define RODAR_BENCHMARK 0           // 1 = roda o benchmark no boot (leva ~2 minutos)
 
 // tudo o que precisamos guardar de cada versão do modelo
 struct Modelo {
@@ -79,6 +91,7 @@ static int classe_prevista(const TfLiteTensor* t)
     return melhor;
 }
 
+#if RODAR_BENCHMARK
 // ---------------------------------------------------------------- benchmark
 static void benchmark(Modelo& m)
 {
@@ -145,14 +158,95 @@ static void imprimir_tabela()
     #endif
         printf("  CPU a %d MHz | compilado com %s\n\n", CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, otimizacao);
 }
+#endif
+
+// ---------------------------------------------------------------- Wi-Fi (modo Station)
+// o Wi-Fi avisa o que acontece por meio de "eventos"; esta função reage a cada um
+static void ao_evento_wifi(void* arg, esp_event_base_t base, int32_t id, void* dados)
+{
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();                                  // o Wi-Fi ligou: tenta conectar
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        printf("Wi-Fi desconectado, tentando de novo...\n");
+        esp_wifi_connect();                                  // caiu: tenta de novo
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* evento = (ip_event_got_ip_t*)dados;
+        printf("Conectado em \"%s\"!\n", WIFI_CASA_SSID);
+        printf("No navegador do PC, abra: http://" IPSTR "\n", IP2STR(&evento->ip_info.ip));
+    }
+}
+
+static void iniciar_wifi_casa()
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // registra a função que reage aos eventos de Wi-Fi e de IP
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &ao_evento_wifi, nullptr, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &ao_evento_wifi, nullptr, nullptr));
+
+    wifi_config_t config = {};
+    strncpy((char*)config.sta.ssid, WIFI_CASA_SSID, sizeof(config.sta.ssid));
+    strncpy((char*)config.sta.password, WIFI_CASA_SENHA, sizeof(config.sta.password));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    printf("Conectando em \"%s\"...\n", WIFI_CASA_SSID);
+}
+
+// ---------------------------------------------------------------- servidor web
+static esp_err_t pagina_inicial(httpd_req_t* req)
+{
+    const char* html =
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Pictionary ESP32</title></head>"
+        "<body style='font-family:sans-serif;padding:16px'>"
+        "<h1>Pictionary ESP32</h1>"
+        "<p>A placa esta funcionando!</p>"
+        "</body></html>";
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static void iniciar_servidor()
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.stack_size = 8192;   // a inferência vai rodar dentro do servidor (passo 7.3)
+
+    httpd_handle_t servidor = nullptr;
+    ESP_ERROR_CHECK(httpd_start(&servidor, &config));
+
+    httpd_uri_t rota_inicial = {};
+    rota_inicial.uri = "/";
+    rota_inicial.method = HTTP_GET;
+    rota_inicial.handler = pagina_inicial;
+    httpd_register_uri_handler(servidor, &rota_inicial);
+
+    printf("Servidor web iniciado\n");
+}
 
 // ---------------------------------------------------------------- main
 extern "C" void app_main(void)
 {
-    printf("\n=== Pictionary ESP32: benchmark float32 vs int8 ===\n");
-    printf("RAM livre no inicio: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+    printf("\n=== Pictionary ESP32 ===\n");
 
-    // as duas versões usam as mesmas 5 operações, então um resolver serve para as duas
+    // o Wi-Fi guarda dados de calibração do rádio na NVS (uma área da flash)
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     static tflite::MicroMutableOpResolver<5> resolver;
     resolver.AddConv2D();
     resolver.AddMaxPool2D();
@@ -161,10 +255,15 @@ extern "C" void app_main(void)
     resolver.AddSoftmax();
 
     if (!iniciar(g_int8, resolver) || !iniciar(g_float32, resolver)) return;
-    printf("RAM livre com os dois modelos: %lu bytes\n\n", (unsigned long)esp_get_free_heap_size());
+    printf("RAM livre com os dois modelos: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 
-    printf("rodando %d desenhos em cada versao...\n", NUM_AMOSTRAS);
+#if RODAR_BENCHMARK
     benchmark(g_int8);
     benchmark(g_float32);
     imprimir_tabela();
+#endif
+
+    iniciar_wifi_casa();
+    iniciar_servidor();
+    printf("RAM livre com tudo rodando: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 }
