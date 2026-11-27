@@ -132,9 +132,13 @@ pictionary-esp32/
 ├── firmware/                   projeto ESP-IDF
 │   ├── partitions.csv          partição de 3 MB para o app
 │   ├── sdkconfig               240 MHz, -O2, flash 80 MHz, 4 MB
+│   ├── sdkconfig.tela          liga a tela touch (opcional)
 │   └── main/
 │       ├── main.cc             TFLite Micro, benchmark, Wi-Fi e servidor HTTP
 │       ├── index.html          página de desenho (embutida no firmware)
+│       ├── tela.cc / .h        interface na tela touch ESP32-2432S028 (opcional)
+│       ├── rasterizar.cc / .h  pré-processamento do index.html, em C (para a tela)
+│       ├── Kconfig.projbuild   menu "Pictionary" do menuconfig
 │       ├── modelo_*.cc / .h    modelos como arrays C (gerados)
 │       ├── amostras.cc / .h    300 desenhos de teste para o benchmark (gerados)
 │       └── wifi_credenciais.exemplo.h
@@ -196,6 +200,51 @@ Abra esse endereço num navegador conectado à mesma rede e desenhe.
 ### 4. Rodar o benchmark
 
 No `main.cc`, mude `#define RODAR_BENCHMARK 0` para `1`. No boot, a placa roda os 300 desenhos de teste nas duas versões (~2 minutos) e imprime a tabela no monitor.
+
+---
+
+##  Opcional: desenhar na tela touch da placa
+
+Também dá para jogar sem navegador, desenhando direto na tela da **ESP32-2432S028** ("Cheap Yellow Display", 2,8" 320×240, toque resistivo XPT2046). É uma opção de compilação: desligada, o firmware é exatamente o projeto original.
+
+```
+ ┌──────────────────────────┐
+ │                          │
+ │     área de desenho      │
+ │         228×228          │
+ │                          │
+ ├─────────┬─────────┬──────┤
+ │ FLOAT32 │ INT8    │[28×28│
+ │ gato    │ gato    │prévia│
+ │ 87% 401ms 85% 116ms      │
+ ├─────────┴───┬─────┴──────┤
+ │ Web: IP     │  Limpar    │
+ └─────────────┴────────────┘
+```
+
+- Tela na vertical (240×320). Desenhe com o dedo ou a canetinha. Ao soltar, depois de 0,6 s, a placa mostra o palpite dos dois modelos e o que o modelo "vê" (28×28).
+- O pré-processamento é o mesmo do `index.html`, reescrito em C (`rasterizar.cc`).
+- A página web continua funcionando ao mesmo tempo, e o IP aparece na tela. Sem o `wifi_credenciais.h`, a placa funciona só pela tela.
+
+Na pasta `firmware`:
+
+```bash
+idf.py -B build_tela -D SDKCONFIG=build_tela/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig;sdkconfig.tela" build flash monitor
+```
+
+O `sdkconfig.tela` liga a opção por cima do `sdkconfig` original, que não é alterado: a configuração da tela fica em `build_tela/`. As dependências da tela (LVGL 9, `esp_lvgl_port`, drivers ST7789/ILI9341 e XPT2046) só são baixadas nesse modo.
+
+Ajustes em `idf.py -B build_tela -D SDKCONFIG=build_tela/sdkconfig menuconfig` > **Pictionary**:
+
+| Opção | Padrão | Quando mudar |
+|---|---|---|
+| Controlador da tela | ST7789 | Placas só com micro USB costumam usar ILI9341 |
+| Inverter cores | desligado | Cores em negativo |
+| Tela: espelhar X / Y | desligado | Imagem de cabeça para baixo ou espelhada |
+| Toque: espelhar X / Y | desligado | O traço aparece longe do dedo |
+| Espera para adivinhar | 600 ms | |
+
+Pinagem: LCD SCLK/MOSI/MISO/CS/DC/BL = 14/13/12/15/2/21; toque CLK/MOSI/MISO/CS/IRQ = 25/32/39/33/36.
 
 ---
 
