@@ -1,0 +1,50 @@
+menu "Pictionary"
+
+    config PICTIONARY_TELA
+        bool "Desenhar na tela touch da placa (ESP32-2432S028)"
+        default n
+        help
+            Liga a interface na tela touch de 2,8" da ESP32-2432S028 ("Cheap Yellow
+            Display"): você desenha com o dedo/caneta e a placa mostra o palpite dos
+            dois modelos. A página web continua funcionando ao mesmo tempo.
+            Desligado, o firmware é exatamente o projeto original (só navegador).
+
+    if PICTIONARY_TELA
+
+        choice PICTIONARY_LCD_DRIVER
+            prompt "Controlador da tela"
+            default PICTIONARY_LCD_ST7789
+            help
+                A ESP32-2432S028 com duas portas USB (micro e USB-C) usa ST7789.
+                A versão antiga, só com micro USB, usa ILI9341.
+            config PICTIONARY_LCD_ST7789
+                bool "ST7789 (placa com duas USB)"
+            config PICTIONARY_LCD_ILI9341
+                bool "ILI9341 (placa só com micro USB)"
+        endchoice
+
+        config PICTIONARY_LCD_INVERT
+            bool "Inverter cores da tela"
+            default n
+
+        config PICTIONARY_LCD_MIRROR_X
+            bool "Tela: espelhar X"
+            default n
+        config PICTIONARY_LCD_MIRROR_Y
+            bool "Tela: espelhar Y"
+            default n
+
+        config PICTIONARY_TOUCH_MIRROR_X
+            bool "Toque: espelhar X"
+            default n
+        config PICTIONARY_TOUCH_MIRROR_Y
+            bool "Toque: espelhar Y"
+            default n
+
+        config PICTIONARY_PALPITE_MS
+            int "Espera depois de levantar o dedo para adivinhar (ms)"
+            default 600
+
+    endif
+
+endmenu

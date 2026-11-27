@@ -9,6 +9,7 @@ data/
 
 # firmware ESP-IDF (gerados na compilação)
 build/
+build_tela/
 managed_components/
 sdkconfig.old
 

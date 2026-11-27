@@ -1,0 +1,21 @@
+# Liga a tela touch da ESP32-2432S028, por cima do sdkconfig original.
+# Uso (na pasta firmware):
+#   idf.py -B build_tela -D SDKCONFIG=build_tela/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig;sdkconfig.tela" build flash monitor
+# O sdkconfig original não é alterado: a configuração da tela fica em build_tela/sdkconfig.
+
+CONFIG_PICTIONARY_TELA=y
+CONFIG_PICTIONARY_LCD_ST7789=y
+
+# LVGL: fontes usadas na interface e memória pela libc (heap do ESP-IDF)
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+CONFIG_LV_USE_BUILTIN_MALLOC=n
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_USE_OBSERVER=n
+CONFIG_LV_USE_SYSMON=n
+# redesenha a cada 15 ms (padrão 33): o traço acompanha melhor o dedo
+CONFIG_LV_DEF_REFR_PERIOD=15

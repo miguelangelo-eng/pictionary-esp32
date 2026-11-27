@@ -8,13 +8,23 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
-#include "wifi_credenciais.h"
+#include "sdkconfig.h"
+
+// Wi-Fi: obrigatório no modo original (só navegador). Com a tela touch ligada ele vira
+// opcional: sem o wifi_credenciais.h, a placa funciona sozinha, só pela tela.
+#if __has_include("wifi_credenciais.h") || !CONFIG_PICTIONARY_TELA
+#include "wifi_credenciais.h"  // não existe? copie o wifi_credenciais.exemplo.h
+#define TEM_WIFI 1
+#else
+#define TEM_WIFI 0
+#endif
 
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -23,6 +33,10 @@
 #include "amostras.h"
 #include "modelo_float32.h"
 #include "modelo_int8.h"
+
+#if CONFIG_PICTIONARY_TELA
+#include "tela.h"
+#endif
 
 #define WIFI_SSID  "Pictionary-IA"
 #define WIFI_SENHA "tinyml123"      // mínimo de 8 caracteres
@@ -42,6 +56,9 @@ struct Modelo {
 
 static Modelo g_int8    = {"int8",    modelo_int8,    modelo_int8_len,    24 * 1024, nullptr, 0, 0, 0, 0};
 static Modelo g_float32 = {"float32", modelo_float32, modelo_float32_len, 96 * 1024, nullptr, 0, 0, 0, 0};
+
+// a página web e a tela touch podem pedir um palpite ao mesmo tempo: um de cada vez
+static SemaphoreHandle_t g_trava;
 
 // ---------------------------------------------------------------- preparação
 static bool iniciar(Modelo& m, const tflite::MicroOpResolver& resolver)
@@ -195,6 +212,28 @@ static void imprimir_tabela()
 }
 #endif
 
+#if CONFIG_PICTIONARY_TELA
+// ---------------------------------------------------------------- tela touch
+// chamada pela tela (numa task própria) com o desenho 28x28 já pré-processado
+static void prever_para_tela(const uint8_t* pixels, TelaPalpite res[2])
+{
+    Modelo* modelos[2] = {&g_float32, &g_int8};
+    xSemaphoreTake(g_trava, portMAX_DELAY);
+    for (int m = 0; m < 2; m++) {
+        TfLiteTensor* entrada = modelos[m]->interpretador->input(0);
+        const TfLiteTensor* saida = modelos[m]->interpretador->output(0);
+        preencher_entrada(entrada, pixels);
+        int64_t t0 = esp_timer_get_time();
+        modelos[m]->interpretador->Invoke();
+        res[m].ms = (esp_timer_get_time() - t0) / 1000.0f;
+        res[m].classe = classe_prevista(saida);
+        res[m].prob = probabilidade(saida, res[m].classe);
+    }
+    xSemaphoreGive(g_trava);
+}
+#endif
+
+#if TEM_WIFI
 // ---------------------------------------------------------------- Wi-Fi (modo Station)
 // o Wi-Fi avisa o que acontece por meio de "eventos"; esta função reage a cada um
 static void ao_evento_wifi(void* arg, esp_event_base_t base, int32_t id, void* dados)
@@ -208,6 +247,11 @@ static void ao_evento_wifi(void* arg, esp_event_base_t base, int32_t id, void* d
         ip_event_got_ip_t* evento = (ip_event_got_ip_t*)dados;
         printf("Conectado em \"%s\"!\n", WIFI_CASA_SSID);
         printf("No navegador do PC, abra: http://" IPSTR "\n", IP2STR(&evento->ip_info.ip));
+#if CONFIG_PICTIONARY_TELA
+        char texto[48];
+        snprintf(texto, sizeof(texto), "Web: " IPSTR, IP2STR(&evento->ip_info.ip));
+        tela_status(texto);
+#endif
     }
 }
 
@@ -266,6 +310,7 @@ static esp_err_t rota_prever(httpd_req_t* req)
     }
 
     printf("desenho recebido:\n");
+    xSemaphoreTake(g_trava, portMAX_DELAY);
     static char json[1024];
     int n = snprintf(json, sizeof(json), "{\"categorias\":[");
     for (int k = 0; k < NUM_CLASSES; k++) {
@@ -276,6 +321,7 @@ static esp_err_t rota_prever(httpd_req_t* req)
     n += snprintf(json + n, sizeof(json) - n, ",");
     n += prever_json(g_int8, pixels, json + n, sizeof(json) - n);
     n += snprintf(json + n, sizeof(json) - n, "}");
+    xSemaphoreGive(g_trava);
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, n);
@@ -303,6 +349,8 @@ static void iniciar_servidor()
 
     printf("Servidor web iniciado\n");
 }
+
+#endif  // TEM_WIFI
 
 // ---------------------------------------------------------------- main
 extern "C" void app_main(void)
@@ -333,7 +381,19 @@ extern "C" void app_main(void)
     imprimir_tabela();
 #endif
 
+    g_trava = xSemaphoreCreateMutex();
+
+#if CONFIG_PICTIONARY_TELA
+    tela_iniciar(prever_para_tela);
+    printf("RAM livre com a tela: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
+#endif
+
+#if TEM_WIFI
     iniciar_wifi_casa();
     iniciar_servidor();
+#else
+    printf("Sem wifi_credenciais.h: so a tela touch, sem pagina web\n");
+    tela_status("Sem Wi-Fi");
+#endif
     printf("RAM livre com tudo rodando: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
 }
